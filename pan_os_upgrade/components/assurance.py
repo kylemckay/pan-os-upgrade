@@ -451,6 +451,10 @@ def generate_diff_report_pdf(
     content.append(d)
     content.append(Spacer(1, 20))
     for section, details in pre_post_diff.items():
+        # Skip sections without a comparison result (e.g. session_stats when no thresholds are configured)
+        if not isinstance(details, dict):
+            continue
+
         # Section title with background color
         section_style = styles["Heading2"]
         section_style.backColor = colors.HexColor("#EEEEEE")
@@ -721,6 +725,14 @@ def perform_snapshot(
 
                 return snapshot
 
+            # `run_assurance` handles its own errors and returns None, so count this as a failed attempt
+            attempt += 1
+            if attempt < max_retries:
+                logging.warning(
+                    f"{get_emoji(action='warning')} {hostname}: Snapshot attempt failed. Retrying after {retry_interval} seconds."
+                )
+                time.sleep(retry_interval)
+
         # Catch specific and general exceptions
         except (AttributeError, IOError, Exception) as error:
             logging.warning(
@@ -867,7 +879,19 @@ def run_assurance(
             logging.debug(
                 f"{get_emoji(action='start')} {hostname}: Performing snapshots."
             )
-            results = checks_firewall.run_snapshots(snapshots_config=actions)
+            # Take each snapshot on its own so that one unsupported area (e.g. a firewall
+            # that reports no hardware interfaces) does not prevent the others from being captured
+            results = {}
+            for action in actions:
+                action_key = next(iter(action)) if isinstance(action, dict) else action
+                try:
+                    results.update(
+                        checks_firewall.run_snapshots(snapshots_config=[action])
+                    )
+                except Exception as e:
+                    logging.warning(
+                        f"{get_emoji(action='warning')} {hostname}: Unable to capture '{action_key}' snapshot, skipping it: {e}"
+                    )
             logging.debug(
                 f"{get_emoji(action='report')} {hostname}: Snapshot results {results}"
             )
